@@ -1,4 +1,3 @@
-
 import os
 import io
 import json
@@ -15,25 +14,31 @@ from pydantic import BaseModel
 import numpy as np
 import pandas as pd
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
 
-# ===== Settings =====
-TENANTS_DIR = Path("tenants")
-TENANTS_DIR.mkdir(exist_ok=True)
+# ===== Embeddings: FastEmbed (קליל, בלי PyTorch) =====
+from fastembed import TextEmbedding
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")  # מודל רב-לשוני, חסכוני בזיכרון
+_embedder = None
+def get_embedder():
+    global _embedder
+    if _embedder is None:
+        _embedder = TextEmbedding(model_name=EMBEDDING_MODEL)
+    return _embedder
 
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-embed_model = SentenceTransformer(EMBEDDING_MODEL)
-
-# Gemini (Free tier): https://aistudio.google.com
+# ===== Gemini (Free tier) =====
 import google.generativeai as genai
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME", "gemini-2.0-flash-lite")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-app = FastAPI(title="EzChat — Gemini Starter")
+# ===== Paths / App =====
+TENANTS_DIR = Path("tenants")
+TENANTS_DIR.mkdir(exist_ok=True)
 
-# CORS: in production, replace ["*"] with your site domains
+app = FastAPI(title="EzChat — Gemini Starter (FastEmbed)")
+
+# בייצור: החלף ["*"] לדומיינים שלך
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -60,13 +65,11 @@ def chunk_text(text: str, max_chars: int = 900) -> List[str]:
         parts.append("\n\n".join(buf))
     return [p.strip() for p in parts if p.strip()]
 
-def normalize_embedding(vec: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(vec)
-    return vec / (n + 1e-10)
-
 def embed_texts(texts: List[str]) -> np.ndarray:
-    embs = embed_model.encode(texts, convert_to_numpy=True, batch_size=64, show_progress_bar=False)
-    embs = np.vstack([normalize_embedding(e) for e in embs])
+    # FastEmbed מחזיר generator של וקטורים; נהפוך למערך וננרמל לקוסינוס
+    embs = np.asarray(list(get_embedder().embed(texts)), dtype=np.float32)
+    norms = np.linalg.norm(embs, axis=1, keepdims=True)
+    embs = embs / (norms + 1e-10)
     return embs
 
 def load_excel(file_bytes: bytes) -> List[dict]:
@@ -88,7 +91,6 @@ def load_excel(file_bytes: bytes) -> List[dict]:
 
 def load_csv(file_bytes: bytes) -> List[dict]:
     df = pd.read_csv(io.BytesIO(file_bytes))
-    # reuse excel logic by converting in-memory
     xls = io.BytesIO()
     df.to_excel(xls, index=False)
     return load_excel(xls.getvalue())
@@ -139,7 +141,7 @@ def retrieve(tenant_id: str, query: str, k: int = 5):
         return []
     q_emb = embed_texts([query])[0]
     embs = idx["embeddings"]  # (n, d)
-    sims = embs @ q_emb  # cosine (normalized)
+    sims = embs @ q_emb  # cosine (vectors מנורמלים)
     topk = np.argsort(-sims)[:k]
     results = []
     for i in topk:
@@ -183,8 +185,7 @@ async def upload(tenant_id: str = Form(...), files: List[UploadFile] = File(...)
             elif name.endswith(".txt"):
                 records.extend(load_txt(data, source="txt"))
             else:
-                # fallback: try as text
-                records.extend(load_txt(data, source="raw"))
+                records.extend(load_txt(data, source="raw"))  # fallback
         except Exception as e:
             return {"ok": False, "error": f"failed {name}: {e}"}
 
@@ -199,7 +200,6 @@ async def chat(body: ChatIn):
     ctx = retrieve(body.tenant_id, body.message, k=5)
     context_text = "\n\n".join([f"[מקור {i+1}]\n" + c["text"] for i, c in enumerate(ctx)])
 
-    # System behavior in Hebrew
     system_text = (
         "אתה עוזר חכם לעסק מקומי. השתמש תחילה במידע שסופק בהקשר (קטלוג/תקנון), "
         "ואם משהו לא מופיע שם, אפשר להסתמך על ידע כללי — אבל אל תמציא פרטי מדיניות/מחיר. "
