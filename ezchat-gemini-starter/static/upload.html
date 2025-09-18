@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>העלאת קבצים לבוט</title>
+<body style="font-family:system-ui;padding:24px;max-width:680px;margin:auto">
+  <h1>העלאת קבצים לבוט</h1>
+  <p>מלא/י Tenant ID (שם אתר/לקוח), בחרי קבצים (Excel/CSV/PDF/TXT/MD) ולחצי העלה.</p>
+  <form id="f">
+    <label>Tenant ID: <input name="tenant_id" required style="margin:4px"></label>
+    <p><input type="file" name="files" multiple required /></p>
+    <button>העלה</button>
+  </form>
+  <hr/>
+  <h3>בדיקת צ'אט מהירה</h3>
+  <p>שימי את אותו Tenant ID, ואז שאלי שאלה.</p>
+  <div style="display:flex;gap:8px;align-items:center">
+    <input id="tnt" placeholder="tenant id" style="padding:6px 8px">
+    <input id="q" placeholder="מה מדיניות ההחזרות?" style="flex:1;padding:6px 8px">
+    <button id="ask">שאל</button>
+  </div>
+  <pre id="out" style="background:#f8fafc;padding:12px;border-radius:10px;margin-top:12px;white-space:pre-wrap"></pre>
+
+  <script>
+    const f = document.getElementById('f');
+    const out = document.getElementById('out');
+    f.onsubmit = async (e)=>{
+      e.preventDefault();
+      const fd = new FormData(f);
+      const res = await fetch('/api/upload', {method:'POST', body: fd});
+      out.textContent = JSON.stringify(await res.json(), null, 2);
+    };
+    document.getElementById('ask').onclick = async ()=>{
+      const tenant = document.getElementById('tnt').value.trim();
+      const q = document.getElementById('q').value.trim();
+      if(!tenant || !q){ out.textContent = 'נא למלא Tenant ושאלה'; return; }
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({tenant_id: tenant, message: q})
+      });
+      out.textContent = JSON.stringify(await res.json(), null, 2);
+    };
+  </script>
+</body>
+</html>
